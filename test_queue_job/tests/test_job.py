@@ -8,6 +8,7 @@ import mock
 
 import odoo.tests.common as common
 
+from odoo.addons.queue_job import identity_exact
 from odoo.addons.queue_job.exception import (
     FailedJobError,
     NoSuchJobError,
@@ -21,31 +22,31 @@ from odoo.addons.queue_job.job import (
     RETRY_INTERVAL,
     STARTED,
     Job,
-    identity_exact,
+    WAIT_DEPENDENCIES,
 )
 
 from .common import JobCommonCase
 
 
 class TestJobsOnTestingMethod(JobCommonCase):
-    """ Test Job """
+    """Test Job"""
 
     def test_new_job(self):
         """
         Create a job
         """
         test_job = Job(self.method)
-        self.assertEqual(test_job.func, self.method)
+        self.assertEqual(test_job.func.__func__, self.method.__func__)
 
     def test_eta(self):
-        """ When an `eta` is datetime, it uses it """
+        """When an `eta` is datetime, it uses it"""
         now = datetime.now()
         method = self.env["res.users"].mapped
         job_a = Job(method, eta=now)
         self.assertEqual(job_a.eta, now)
 
     def test_eta_integer(self):
-        """ When an `eta` is an integer, it adds n seconds up to now """
+        """When an `eta` is an integer, it adds n seconds up to now"""
         datetime_path = "odoo.addons.queue_job.job.datetime"
         with mock.patch(datetime_path, autospec=True) as mock_datetime:
             mock_datetime.now.return_value = datetime(2015, 3, 15, 16, 41, 0)
@@ -53,7 +54,7 @@ class TestJobsOnTestingMethod(JobCommonCase):
             self.assertEqual(job_a.eta, datetime(2015, 3, 15, 16, 42, 0))
 
     def test_eta_timedelta(self):
-        """ When an `eta` is a timedelta, it adds it up to now """
+        """When an `eta` is a timedelta, it adds it up to now"""
         datetime_path = "odoo.addons.queue_job.job.datetime"
         with mock.patch(datetime_path, autospec=True) as mock_datetime:
             mock_datetime.now.return_value = datetime(2015, 3, 15, 16, 41, 0)
@@ -96,8 +97,8 @@ class TestJobsOnTestingMethod(JobCommonCase):
 
     def test_on_model_method(self):
         job_ = Job(self.env["test.queue.job"].testing_method)
-        self.assertEquals(job_.model_name, "test.queue.job")
-        self.assertEquals(job_.method_name, "testing_method")
+        self.assertEqual(job_.model_name, "test.queue.job")
+        self.assertEqual(job_.method_name, "testing_method")
 
     def test_invalid_function(self):
         with self.assertRaises(TypeError):
@@ -106,7 +107,7 @@ class TestJobsOnTestingMethod(JobCommonCase):
     def test_set_pending(self):
         job_a = Job(self.method)
         job_a.set_pending(result="test")
-        self.assertEquals(job_a.state, PENDING)
+        self.assertEqual(job_a.state, PENDING)
         self.assertFalse(job_a.date_enqueued)
         self.assertFalse(job_a.date_started)
         self.assertEquals(job_a.retry, 0)
@@ -119,8 +120,8 @@ class TestJobsOnTestingMethod(JobCommonCase):
             mock_datetime.now.return_value = datetime(2015, 3, 15, 16, 41, 0)
             job_a.set_enqueued()
 
-        self.assertEquals(job_a.state, ENQUEUED)
-        self.assertEquals(job_a.date_enqueued, datetime(2015, 3, 15, 16, 41, 0))
+        self.assertEqual(job_a.state, ENQUEUED)
+        self.assertEqual(job_a.date_enqueued, datetime(2015, 3, 15, 16, 41, 0))
         self.assertFalse(job_a.date_started)
 
     def test_set_started(self):
@@ -130,8 +131,8 @@ class TestJobsOnTestingMethod(JobCommonCase):
             mock_datetime.now.return_value = datetime(2015, 3, 15, 16, 41, 0)
             job_a.set_started()
 
-        self.assertEquals(job_a.state, STARTED)
-        self.assertEquals(job_a.date_started, datetime(2015, 3, 15, 16, 41, 0))
+        self.assertEqual(job_a.state, STARTED)
+        self.assertEqual(job_a.date_started, datetime(2015, 3, 15, 16, 41, 0))
 
     def test_worker_pid(self):
         """When a job is started, it gets the PID of the worker that starts it"""
@@ -180,9 +181,52 @@ class TestJobsOnTestingMethod(JobCommonCase):
             mock_datetime.now.return_value = datetime(2015, 3, 15, 16, 41, 0)
             job_a.postpone(result="test", seconds=60)
 
-        self.assertEquals(job_a.eta, datetime(2015, 3, 15, 16, 42, 0))
-        self.assertEquals(job_a.result, "test")
+        self.assertEqual(job_a.eta, datetime(2015, 3, 15, 16, 42, 0))
+        self.assertEqual(job_a.result, "test")
         self.assertFalse(job_a.exc_info)
+
+    def test_company_simple(self):
+        company = self.env.ref("base.main_company")
+        eta = datetime.now() + timedelta(hours=5)
+        test_job = Job(
+            self.method,
+            args=("o", "k"),
+            kwargs={"return_context": 1},
+            priority=15,
+            eta=eta,
+            description="My description",
+        )
+        test_job.worker_pid = 99999  # normally set on "set_start"
+        test_job.company_id = company.id
+        test_job.store()
+        job_read = Job.load(self.env, test_job.uuid)
+        self.assertEqual(test_job.func, job_read.func)
+        result_ctx = test_job.func(*tuple(test_job.args), **test_job.kwargs)
+        self.assertEqual(result_ctx.get("allowed_company_ids"), company.ids)
+
+    def test_company_complex(self):
+        company1 = self.env.ref("base.main_company")
+        company2 = company1.create({"name": "Queue job company"})
+        companies = company1 | company2
+        self.env.user.write({"company_ids": [(6, False, companies.ids)]})
+        # Ensure the main company still the first
+        self.assertEqual(self.env.user.company_id, company1)
+        eta = datetime.now() + timedelta(hours=5)
+        test_job = Job(
+            self.method,
+            args=("o", "k"),
+            kwargs={"return_context": 1},
+            priority=15,
+            eta=eta,
+            description="My description",
+        )
+        test_job.worker_pid = 99999  # normally set on "set_start"
+        test_job.company_id = company2.id
+        test_job.store()
+        job_read = Job.load(self.env, test_job.uuid)
+        self.assertEqual(test_job.func, job_read.func)
+        result_ctx = test_job.func(*tuple(test_job.args), **test_job.kwargs)
+        self.assertEqual(result_ctx.get("allowed_company_ids"), company2.ids)
 
     def test_store(self):
         test_job = Job(self.method)
@@ -216,7 +260,7 @@ class TestJobsOnTestingMethod(JobCommonCase):
         job_read = Job.load(self.env, test_job.uuid)
         self.assertEqual(test_job.uuid, job_read.uuid)
         self.assertEqual(test_job.model_name, job_read.model_name)
-        self.assertEqual(test_job.func, job_read.func)
+        self.assertEqual(test_job.func.__func__, job_read.func.__func__)
         self.assertEqual(test_job.args, job_read.args)
         self.assertEqual(test_job.kwargs, job_read.kwargs)
         self.assertEqual(test_job.method_name, job_read.method_name)
@@ -264,19 +308,19 @@ class TestJobsOnTestingMethod(JobCommonCase):
     def test_unicode(self):
         test_job = Job(
             self.method,
-            args=(u"öô¿‽", u"ñě"),
-            kwargs={"c": u"ßø"},
+            args=("öô¿‽", "ñě"),
+            kwargs={"c": "ßø"},
             priority=15,
-            description=u"My dé^Wdescription",
+            description="My dé^Wdescription",
         )
         test_job.store()
         job_read = Job.load(self.env, test_job.uuid)
         self.assertEqual(test_job.args, job_read.args)
-        self.assertEqual(job_read.args, (u"öô¿‽", u"ñě"))
+        self.assertEqual(job_read.args, ("öô¿‽", "ñě"))
         self.assertEqual(test_job.kwargs, job_read.kwargs)
-        self.assertEqual(job_read.kwargs, {"c": u"ßø"})
+        self.assertEqual(job_read.kwargs, {"c": "ßø"})
         self.assertEqual(test_job.description, job_read.description)
-        self.assertEqual(job_read.description, u"My dé^Wdescription")
+        self.assertEqual(job_read.description, "My dé^Wdescription")
 
     def test_accented_bytestring(self):
         test_job = Job(
@@ -305,7 +349,7 @@ class TestJobsOnTestingMethod(JobCommonCase):
         job_instance = delayable.testing_method("a", k=1)
         self.assertTrue(job_instance)
         result = job_instance.perform()
-        self.assertEquals(result, (("a",), {"k": 1}))
+        self.assertEqual(result, (("a",), {"k": 1}))
 
     def test_job_identity_key_str(self):
         id_key = "e294e8444453b09d59bdb6efbfec1323"
@@ -342,10 +386,10 @@ class TestJobsOnTestingMethod(JobCommonCase):
 
 
 class TestJobs(JobCommonCase):
-    """ Test jobs on other methods or with different job configuration """
+    """Test jobs on other methods or with different job configuration"""
 
     def test_description(self):
-        """ If no description is given to the job, it
+        """If no description is given to the job, it
         should be computed from the function
         """
         # if a docstring is defined for the function
@@ -361,7 +405,7 @@ class TestJobs(JobCommonCase):
         self.assertEqual(job_a.description, description)
 
     def test_retry_pattern(self):
-        """ When we specify a retry pattern, the eta must follow it"""
+        """When we specify a retry pattern, the eta must follow it"""
         datetime_path = "odoo.addons.queue_job.job.datetime"
         method = self.env["test.queue.job"].job_with_retry_pattern
         with mock.patch(datetime_path, autospec=True) as mock_datetime:
@@ -389,7 +433,7 @@ class TestJobs(JobCommonCase):
             self.assertEqual(test_job.eta, datetime(2015, 6, 1, 15, 15, 0))
 
     def test_retry_pattern_no_zero(self):
-        """ When we specify a retry pattern without 0, uses RETRY_INTERVAL"""
+        """When we specify a retry pattern without 0, uses RETRY_INTERVAL"""
         method = self.env["test.queue.job"].job_with_retry_pattern__no_zero
         test_job = Job(method, max_retries=0)
         test_job.retry += 1
@@ -411,14 +455,14 @@ class TestJobs(JobCommonCase):
         recs = rec1 + rec2
         job_instance = recs.with_delay().mapped("name")
         self.assertTrue(job_instance)
-        self.assertEquals(job_instance.args, ("name",))
-        self.assertEquals(job_instance.recordset, recs)
-        self.assertEquals(job_instance.model_name, "test.queue.job")
-        self.assertEquals(job_instance.method_name, "mapped")
-        self.assertEquals(["test1", "test2"], job_instance.perform())
+        self.assertEqual(job_instance.args, ("name",))
+        self.assertEqual(job_instance.recordset, recs)
+        self.assertEqual(job_instance.model_name, "test.queue.job")
+        self.assertEqual(job_instance.method_name, "mapped")
+        self.assertEqual(["test1", "test2"], job_instance.perform())
 
     def test_job_identity_key_no_duplicate(self):
-        """ If a job with same identity key in queue do not add a new one """
+        """If a job with same identity key in queue do not add a new one"""
         id_key = "e294e8444453b09d59bdb6efbfec1323"
         rec1 = self.env["test.queue.job"].create({"name": "test1"})
         job_1 = rec1.with_delay(identity_key=id_key).mapped("name")
@@ -428,12 +472,12 @@ class TestJobs(JobCommonCase):
         self.assertEqual(job_2.uuid, job_1.uuid)
 
     def test_job_with_mutable_arguments(self):
-        """ Job with mutable arguments do not mutate on perform() """
+        """Job with mutable arguments do not mutate on perform()"""
         delayable = self.env["test.queue.job"].with_delay()
         job_instance = delayable.job_alter_mutable([1], mutable_kwarg={"a": 1})
         self.assertTrue(job_instance)
         result = job_instance.perform()
-        self.assertEquals(result, ([1, 2], {"a": 1, "b": 2}))
+        self.assertEqual(result, ([1, 2], {"a": 1, "b": 2}))
         job_instance.set_done()
         # at this point, the 'args' and 'kwargs' of the job instance
         # might have been modified, but they must never be modified in
@@ -443,8 +487,8 @@ class TestJobs(JobCommonCase):
         # jobs are always loaded before being performed, so we simulate
         # this behavior here to check if we have the correct initial arguments
         job_instance = Job.load(self.env, job_instance.uuid)
-        self.assertEquals(([1],), job_instance.args)
-        self.assertEquals({"mutable_kwarg": {"a": 1}}, job_instance.kwargs)
+        self.assertEqual(([1],), job_instance.args)
+        self.assertEqual({"mutable_kwarg": {"a": 1}}, job_instance.kwargs)
 
     def test_store_env_su_no_sudo(self):
         demo_user = self.env.ref("base.user_demo")
@@ -493,6 +537,23 @@ class TestJobModel(JobCommonCase):
         stored.write({"state": "failed"})
         stored.requeue()
         self.assertEqual(stored.state, PENDING)
+
+    def test_requeue_wait_dependencies_not_touched(self):
+        job_root = Job(self.env['test.queue.job'].testing_method)
+        job_child = Job(self.env['test.queue.job'].testing_method)
+        job_child.add_depends({job_root})
+        job_root.store()
+        job_child.store()
+
+        record_root = job_root.db_record()
+        record_child = job_child.db_record()
+        self.assertEqual(record_root.state, PENDING)
+        self.assertEqual(record_child.state, WAIT_DEPENDENCIES)
+        record_root.write({'state': 'failed'})
+
+        (record_root + record_child).requeue()
+        self.assertEqual(record_root.state, PENDING)
+        self.assertEqual(record_child.state, WAIT_DEPENDENCIES)
 
     def test_message_when_write_fail(self):
         stored = self._create_job()
@@ -549,7 +610,7 @@ class TestJobModel(JobCommonCase):
 
 
 class TestJobStorageMultiCompany(common.TransactionCase):
-    """ Test storage of jobs """
+    """Test storage of jobs"""
 
     def setUp(self):
         super(TestJobStorageMultiCompany, self).setUp()
@@ -639,8 +700,8 @@ class TestJobStorageMultiCompany(common.TransactionCase):
         )
 
     def test_job_no_company_id(self):
-        """ if we put an empty company_id in the context
-         jobs are created without company_id
+        """if we put an empty company_id in the context
+        jobs are created without company_id
         """
         env = self.env(context={"company_id": None})
         stored = self._create_job(env)
