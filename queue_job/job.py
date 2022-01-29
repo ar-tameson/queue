@@ -9,16 +9,15 @@ import os
 import sys
 import uuid
 import weakref
-
 from datetime import datetime, timedelta
-from random import randint
 from functools import total_ordering
+from random import randint
 
 import odoo
 
 from .exception import FailedJobError, NoSuchJobError, RetryableJobError
 
-WAIT_DEPENDENCIES = 'wait_dependencies'
+WAIT_DEPENDENCIES = "wait_dependencies"
 PENDING = "pending"
 ENQUEUED = "enqueued"
 CANCELLED = "cancelled"
@@ -27,7 +26,7 @@ STARTED = "started"
 FAILED = "failed"
 
 STATES = [
-    (WAIT_DEPENDENCIES, 'Wait Dependencies'),
+    (WAIT_DEPENDENCIES, "Wait Dependencies"),
     (PENDING, "Pending"),
     (ENQUEUED, "Enqueued"),
     (STARTED, "Started"),
@@ -48,8 +47,11 @@ _logger = logging.getLogger(__name__)
 def DelayableRecordset(*args, **kwargs):
     # prevent circular import
     from .delay import DelayableRecordset as dr
-    _logger.debug("DelayableRecordset moved from the queue_job.job"
-                  " to the queue_job.delay python module")
+
+    _logger.debug(
+        "DelayableRecordset moved from the queue_job.job"
+        " to the queue_job.delay python module"
+    )
     return dr(*args, **kwargs)
 
 
@@ -285,11 +287,9 @@ class Job(object):
         job_.identity_key = stored.identity_key
         job_.worker_pid = stored.worker_pid
 
-        job_.__depends_on_uuids.update(
-            stored.dependencies.get('depends_on', [])
-        )
+        job_.__depends_on_uuids.update(stored.dependencies.get("depends_on", []))
         job_.__reverse_depends_on_uuids.update(
-            stored.dependencies.get('reverse_depends_on', [])
+            stored.dependencies.get("reverse_depends_on", [])
         )
         return job_
 
@@ -363,7 +363,7 @@ class Job(object):
             self.method_name,
             self.args,
             self.kwargs,
-            self.uuid
+            self.uuid,
         )
         return self
 
@@ -501,7 +501,7 @@ class Job(object):
 
     def add_depends(self, jobs):
         if self in jobs:
-            raise ValueError('job cannot depend on itself')
+            raise ValueError("job cannot depend on itself")
         self.__depends_on_uuids |= {j.uuid for j in jobs}
         self._depends_on.update(jobs)
         for parent in jobs:
@@ -622,14 +622,12 @@ class Job(object):
             vals["identity_key"] = self.identity_key
 
         dependencies = {
-            'depends_on': [
-                parent.uuid for parent in self.depends_on
-            ],
-            'reverse_depends_on': [
+            "depends_on": [parent.uuid for parent in self.depends_on],
+            "reverse_depends_on": [
                 children.uuid for children in self.reverse_depends_on
             ],
         }
-        vals['dependencies'] = dependencies
+        vals["dependencies"] = dependencies
 
         if create:
             vals.update(
@@ -734,9 +732,7 @@ class Job(object):
     @property
     def depends_on(self):
         if not self._depends_on:
-            self._depends_on = Job.load_many(
-                self.env, self.__depends_on_uuids
-            )
+            self._depends_on = Job.load_many(self.env, self.__depends_on_uuids)
         return self._depends_on
 
     @property
