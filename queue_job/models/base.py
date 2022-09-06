@@ -111,7 +111,6 @@ class Base(models.AbstractModel):
             identity_key=identity_key,
         )
 
-    @api.multi
     def delayable(self, priority=None, eta=None,
                   max_retries=None, description=None,
                   channel=None, identity_key=None):
