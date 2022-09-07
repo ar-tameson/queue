@@ -1,11 +1,14 @@
 # Copyright 2013-2020 Camptocamp SA
 # License LGPL-3.0 or later (http://www.gnu.org/licenses/lgpl.html)
 
+import ast
 import logging
 import random
+import re
+from collections import namedtuple
 from datetime import datetime, timedelta
 
-from odoo import _, api, exceptions, fields, models
+from odoo import _, api, exceptions, fields, models, tools
 from odoo.osv import expression
 from odoo.tools import html_escape
 
@@ -26,6 +29,8 @@ from ..job import (
 )
 
 _logger = logging.getLogger(__name__)
+
+regex_job_function_name = re.compile(r"^<([0-9a-z_\.]+)>\.([0-9a-zA-Z_]+)$")
 
 
 class QueueJob(models.Model):
